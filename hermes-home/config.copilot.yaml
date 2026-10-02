@@ -1,0 +1,70 @@
+# Optional second model: GitHub Copilot as planner / reviewer / judge, local Qwen stays the
+# workhorse. Merged into config.yaml by hermes-init ONLY when COPILOT_MODEL is set in .env.
+#
+# Fallback to the local model is wired at every point Copilot is used:
+#   - a `/model planner --once` turn that fails (402 credits exhausted, 429, 5xx, 401/403)
+#     falls back through `fallback_providers` -> local, for that turn, then restores
+#   - /review's subagent falls back through auxiliary.review.fallback_providers -> local
+#   - goal_judge and /btw fall back through their fallback_chain -> local
+#   - a MoA reference that fails becomes a "[failed: ...]" note; the local aggregator carries on
+#
+# Privacy: every slot below sends code to Copilot (review reads your files; MoA references
+# see tool results cut to 4000 chars). Compression, the main loop and subagents stay local.
+
+model_aliases:
+  planner:
+    model: "${COPILOT_MODEL}"
+    provider: copilot
+
+fallback_providers:
+  - provider: custom
+    model: "${LLM_MODEL}"
+    base_url: "${LLM_BASE_URL}"
+    key_env: LLM_API_KEY
+
+fallback:
+  min_switch_reset_seconds: 0   # a rate-limited Copilot is swapped for local immediately
+
+auxiliary:
+  review:                       # /review -> reviewer subagent on Copilot
+    provider: copilot
+    model: "${COPILOT_MODEL}"
+    fallback_providers:
+      - provider: custom
+        model: "${LLM_MODEL}"
+        base_url: "${LLM_BASE_URL}"
+        key_env: LLM_API_KEY
+  goal_judge:                   # /goal completion judging + /goal draft contracts
+    provider: copilot
+    model: "${COPILOT_MODEL}"
+    timeout: 120
+    fallback_chain:
+      - provider: custom
+        model: "${LLM_MODEL}"
+        base_url: "${LLM_BASE_URL}"
+        key_env: LLM_API_KEY
+  side_question:                # /btw <question>: ask the cloud model without touching history
+    provider: copilot
+    model: "${COPILOT_MODEL}"
+    timeout: 120
+    fallback_chain:
+      - provider: custom
+        model: "${LLM_MODEL}"
+        base_url: "${LLM_BASE_URL}"
+        key_env: LLM_API_KEY
+
+# Mixture of Agents: Copilot advises, Qwen decides and runs the tools.
+#   /model plan --provider moa      (whole session)     /moa <prompt>   (one turn)
+moa:
+  default_preset: plan
+  privacy_filter: display
+  presets:
+    plan:
+      enabled: true
+      fanout: user_turn           # advisor consulted once per user message, not per tool step
+      reference_models:
+        - provider: copilot
+          model: "${COPILOT_MODEL}"
+      aggregator:
+        provider: custom
+        model: "${LLM_MODEL}"

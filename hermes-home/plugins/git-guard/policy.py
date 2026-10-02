@@ -154,7 +154,7 @@ MUTATORS = {
     "gunzip", "xz", "unxz", "bzip2", "bunzip2", "zip", "7z", "7za", "cat",  # cat only matters via redirects, harmless here
 }
 
-ENV_PREFIX_BLOCK = ("GIT_", "DOCKER_", "SSH_", "HERMES_", "LD_PRELOAD", "LD_LIBRARY_PATH")
+ENV_PREFIX_BLOCK = ("GIT_", "DOCKER_", "SSH_", "HERMES_", "COPILOT_", "GITHUB_", "GH_", "LD_PRELOAD", "LD_LIBRARY_PATH")
 ENV_NAME_BLOCK = {
     "PATH", "HOME", "XDG_CONFIG_HOME", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
     "http_proxy", "https_proxy", "all_proxy", "no_proxy", "CURL_CA_BUNDLE", "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE",

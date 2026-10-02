@@ -27,11 +27,13 @@ services:
     volumes:
       - hermes-data:/opt/data
       - ./hermes-home:/seed:ro
+    environment:
+      COPILOT_MODEL: ${COPILOT_MODEL:-}
     command:
       - |
         set -e
         mkdir -p /opt/data/git-guard /opt/data/plugins /opt/data/skills /opt/data/memories
-        if [ ! -f /opt/data/config.yaml ]; then cp /seed/config.yaml /opt/data/config.yaml; echo "[init] seeded config.yaml"; else echo "[init] config.yaml already present, left untouched"; fi
+        /opt/guard/seed-config.py /seed /opt/data/config.yaml
         chown -R 10000:10000 /opt/data
         echo "[init] done"
 
@@ -78,6 +80,9 @@ services:
       LLM_BASE_URL: ${LLM_BASE_URL:?set in .env}
       LLM_MODEL: ${LLM_MODEL:?set in .env}
       LLM_API_KEY: ${LLM_API_KEY:?set in .env}
+      # optional second model (GitHub Copilot); both empty = not configured
+      COPILOT_MODEL: ${COPILOT_MODEL:-}
+      COPILOT_GITHUB_TOKEN: ${COPILOT_GITHUB_TOKEN:-}
       # L3: every outbound connection goes through the allowlisting proxy. There is no other route.
       HTTP_PROXY: "http://edge:8888"
       HTTPS_PROXY: "http://edge:8888"

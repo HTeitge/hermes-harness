@@ -167,6 +167,39 @@ pin important sessions with `hermes sessions pin <id>`), `fact_store` searches t
 and `hermes sessions export --format md` archives transcripts. Per-repo knowledge skills must be
 pinned with `hermes curator pin <skill>` or the curator archives them after 30 days unused.
 
+## Second model: GitHub Copilot as planner and reviewer
+
+Optional. Hermes runs one main model per session (Qwen, local, runs all tools) and lets each
+auxiliary job use a different provider. With `COPILOT_MODEL` and `COPILOT_GITHUB_TOKEN` set in
+`.env`, hermes-init merges `hermes-home/config.copilot.yaml` into the seeded config:
+
+| Where Copilot is used | How | Falls back to local when |
+|---|---|---|
+| Planning turn | `/model planner --once` then `/plan <task>`; next turn runs on Copilot, then Qwen is restored | 402 credits exhausted, 429, 5xx, 401/403: `fallback_providers` takes that turn |
+| Code review | `/review` spawns the reviewer subagent on Copilot | `auxiliary.review.fallback_providers` |
+| `/goal` judge and `/goal draft` contracts | `auxiliary.goal_judge` | `fallback_chain` |
+| `/btw <question>` | `auxiliary.side_question`, answered outside the transcript | `fallback_chain` |
+| Advisor on every user turn | Mixture-of-Agents preset `plan`: Copilot advises, Qwen aggregates and acts. `/moa <prompt>` for one turn, `/model plan --provider moa` for the session | a failed advisor becomes a `[failed: ...]` note, Qwen continues |
+
+Compression, the main loop and ordinary subagents stay on the local model, so whole
+transcripts never leave the machine. Review and planning do send code to Copilot.
+
+Setup notes:
+
+- The token must carry only the "Copilot Requests" permission. A token with repository write
+  access would be a push credential inside the container and would undermine layer L3.
+  Hermes strips `*TOKEN*` variables from the agent's shell, and git-guard denies `GITHUB_*`,
+  `GH_*` and `COPILOT_*` overrides, but the scope of the token is the real control.
+- Add `github.com,api.github.com,api.githubcopilot.com` (and the business or enterprise host if
+  your plan uses one) to `EGRESS_ALLOW`. `verify.sh` checks reachability and the token
+  exchange when `COPILOT_MODEL` is set.
+- Get the model id from the live catalog on first start: `/model --refresh` under the
+  `copilot` provider. Hermes's static list in v0.21.5 stops at `gpt-5.4`; the id your
+  subscription exposes may be newer. Then set `COPILOT_MODEL`, delete the seeded
+  `/opt/data/config.yaml` and re-run `docker compose run --rm hermes-init`.
+- There is no automatic difficulty-based routing in Hermes. Escalation is explicit: the
+  `planner` alias, `/review`, `/btw`, or the MoA preset.
+
 ## Verifying
 
 `docker compose exec hermes /opt/guard/verify.sh` checks, from inside the container as the
@@ -243,6 +276,8 @@ docker-compose.replica.yml    overlay: attach edge to the replica network
 hermes.Dockerfile             derived image: /etc/gitconfig + /opt/guard baked in, root-owned
 .env.example                  all knobs
 hermes-home/config.yaml       Hermes config seed (model, approvals, deny floor, toolsets, plugin)
+hermes-home/config.copilot.yaml  optional overlay: Copilot planner/reviewer/judge with local fallback
+guard/seed-config.py          hermes-init helper that merges the overlay when COPILOT_MODEL is set
 hermes-home/plugins/git-guard plugin.yaml, __init__.py (hook + audit), policy.py (engine)
 guard/gitconfig               L2 system gitconfig
 guard/git-hooks/pre-push      L2 hook (exit 1)

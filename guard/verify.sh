@@ -30,6 +30,18 @@ if [ -n "$base" ]; then
   [ "$code" = "200" ] && ok "model endpoint $base/models reachable (200)" || bad "model endpoint $base/models returned '$code'"
 else bad "LLM_BASE_URL is not set in the container environment"; fi
 
+if [ -n "${COPILOT_MODEL:-}" ]; then
+  hdr "Second model: GitHub Copilot (COPILOT_MODEL=$COPILOT_MODEL)"
+  [ -n "${COPILOT_GITHUB_TOKEN:-}" ] && ok "COPILOT_GITHUB_TOKEN set" || bad "COPILOT_MODEL set but COPILOT_GITHUB_TOKEN empty"
+  for h in github.com api.github.com api.githubcopilot.com; do
+    code=$(curl -s -m 20 -o /dev/null -w '%{http_code}' "https://$h/" 2>/dev/null)
+    [ "$code" != "000" ] && [ "$code" != "403" ] && ok "$h reachable through the proxy ($code)" || bad "$h not reachable through the proxy (code $code): add it to EGRESS_ALLOW"
+  done
+  code=$(curl -s -m 20 -o /dev/null -w '%{http_code}' -H "Authorization: token ${COPILOT_GITHUB_TOKEN:-}" https://api.github.com/copilot_internal/v2/token 2>/dev/null)
+  [ "$code" = "200" ] && ok "Copilot token exchange works (200)" || bad "Copilot token exchange returned $code (token lacks Copilot Requests permission or the plan has no Copilot)"
+  grep -q 'provider: copilot' /opt/data/config.yaml && ok "config.yaml carries the Copilot block" || bad "config.yaml has no Copilot block (COPILOT_MODEL was empty at seed time; delete /opt/data/config.yaml and re-run hermes-init)"
+fi
+
 hdr "Docker socket proxy: read/exec only"
 docker ps >/dev/null 2>&1 && ok "docker ps works" || bad "docker ps failed (DOCKER_HOST=$DOCKER_HOST)"
 if docker run --rm alpine:3.22 true >/dev/null 2>&1; then bad "docker run SUCCEEDED through the proxy"; else ok "docker run refused"; fi

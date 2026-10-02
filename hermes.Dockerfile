@@ -5,6 +5,7 @@ FROM nousresearch/hermes-agent:${HERMES_TAG}
 USER root
 COPY --chmod=0755 guard/git-hooks/ /opt/guard/git-hooks/
 COPY --chmod=0755 guard/verify.sh  /opt/guard/verify.sh
+COPY --chmod=0755 guard/seed-config.py /opt/guard/seed-config.py
 COPY --chmod=0644 guard/gitconfig  /etc/gitconfig
 # No credential helpers, no ssh client config, nothing to push with.
 RUN rm -f /etc/ssh/ssh_config.d/* 2>/dev/null; \
