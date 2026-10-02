@@ -106,6 +106,67 @@ match your server. To change anything else in the seeded config, edit it in the 
   `/opt/data/git-guard/decisions.jsonl` with the reason. This is also the labelled data for a
   future classifier that trims approval prompts.
 
+## Working on a large codebase
+
+Settings in `hermes-home/config.yaml` that matter for real engineering work, all verified
+against the v0.21.5 source:
+
+- **Long builds.** Hermes's tool executor has a separate 420-second deadline on top of
+  `terminal.timeout`; the config raises `timeouts.tools.*` to 900 and the AGENTS.md template
+  tells the agent to run builds and test suites as background jobs with `notify=true`.
+- **Verification before stopping.** `agent.verify_on_stop: true` refuses a final answer when
+  code was edited and no build, test or lint has passed since.
+- **Loop hard stops.** `tool_loop_guardrails.hard_stop_enabled: true` ends identical-failure
+  loops and A/B/A/B cycles instead of only warning.
+- **Generated code.** `search_files` respects `.gitignore` with no override. Copy
+  `templates/.ignore` to each repo root and edit the negations; ripgrep ranks `.ignore` above
+  `.gitignore`, so generated directories become searchable.
+- **Compression.** With a 131k window Hermes compacts near 98k tokens using the same local
+  model with thinking off; `auxiliary.compression.timeout` is 600 for that reason. Proactive
+  pruning is off so llama-server's prefix cache keeps hitting.
+- **Sampling.** There is no temperature key; `providers.local.extra_body` carries the Qwen
+  sampling values and `enable_thinking`. Change them there.
+- **No C# language server ships.** `lsp.enabled: false`. To add diagnostics, bake `csharp-ls`
+  into `hermes.Dockerfile`, then set `lsp.enabled: true`, `install_strategy: manual`,
+  `warmup_timeout: 300`.
+- **Checkpoints stay off.** The shadow-git snapshotter skips directories over 50,000 files and
+  does not exclude `bin/` or `obj/`. Use branches and `git worktree`.
+
+Built-ins worth using in chat:
+
+| Command | Use |
+|---|---|
+| `/plan <task>` | Planning-only turn; writes `.hermes/plans/<timestamp>-<slug>.md`, no edits |
+| `/goal <text>` + `/goal gate add "dotnet test ..."` | Keep iterating until a deterministic command passes; `/goal draft` writes a completion contract |
+| `@diff`, `@staged`, `@git:5`, `@file:path:10-25`, `@folder:dir` | Inject context into a message |
+| `/worktree new <name>` | Isolated checkout under `.worktrees/` for an experiment |
+| `/review` | Reviewer subagent over the current changes |
+| `/refine` | Manual run of the skill/memory distillation pass (the automatic one is off) |
+| `/loop 10m <prompt>` | Re-run a prompt on a cadence inside the session |
+
+Bundled skills to enable in the dashboard Skills tab: `systematic-debugging`,
+`test-driven-development`, `requesting-code-review`, `spike`, `simplify-code`.
+
+## Keeping track of findings
+
+Hermes has no journal feature, so findings live in three places that the config and the
+AGENTS.md template wire together:
+
+1. **Kanban board** (`kanban.db` in the data volume, dashboard Kanban tab). Cards hold a
+   markdown body, a comment thread, attachments and an event history. Every worker-spawning
+   feature is off in the config. Enable the tools for the chat profile once:
+   `docker compose exec hermes hermes tools enable kanban`, then `hermes kanban init`.
+2. **`docs/findings/` in each repo**, with `INDEX.md` as the table of contents
+   (`templates/docs/findings/INDEX.md`). Git history keeps it, and it travels with the code.
+3. **Holographic memory** (`memory.provider: holographic`): a local SQLite fact store with
+   full-text search, tags and trust scores; the top matching facts are prefetched into every
+   turn. No embedding model, no network. The built-in `MEMORY.md` stays for pointers.
+
+Recall: `session_search` searches every past session (`sessions.retention_days` raised to 365;
+pin important sessions with `hermes sessions pin <id>`), `fact_store` searches the memory store,
+and `hermes sessions export --format md` archives transcripts. Per-repo knowledge skills must be
+pinned with `hermes curator pin <skill>` or the curator archives them after 30 days unused.
+
 ## Verifying
 
 `docker compose exec hermes /opt/guard/verify.sh` checks, from inside the container as the
@@ -189,5 +250,7 @@ guard/verify.sh               in-container smoke test
 edge/                         tinyproxy allowlist + socat ingress
 docker-proxy/haproxy.cfg      filtered Docker API
 templates/AGENTS.md           per-repo context file for the agent
+templates/.ignore             re-include generated code for ripgrep/search_files
+templates/docs/findings/      findings index starter for each repo
 tests/                        pytest suite for the policy engine and hook
 ```

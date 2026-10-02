@@ -1,0 +1,8 @@
+# Repo-root .ignore: ripgrep (which Hermes's search_files uses) reads this file and ranks it
+# above .gitignore. Re-include gitignored generated code so the agent can SEARCH it, not just
+# read it by path. Both negations are required: a negated pattern cannot re-include a file
+# whose parent directory is excluded.
+!**/Generated/
+!**/Generated/**
+# add other generated roots here, e.g.
+# !**/obj/*.g.cs

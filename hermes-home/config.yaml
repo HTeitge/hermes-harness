@@ -15,6 +15,23 @@ model:
   context_length: 131072                  # match the server's context; Hermes refuses < 64000
   api_mode: chat_completions
 
+# Named entry for the same endpoint (matched by base_url). This is the only place request-body
+# tuning lives: there is no temperature key in Hermes. Values merge into every request.
+providers:
+  local:
+    api: "${LLM_BASE_URL}"
+    key_env: LLM_API_KEY
+    default_model: "${LLM_MODEL}"
+    context_length: 131072
+    transport: chat_completions
+    extra_body:
+      temperature: 0.6
+      top_p: 0.95
+      top_k: 20
+      presence_penalty: 1.0
+      chat_template_kwargs:
+        enable_thinking: true
+
 # Auxiliary tasks hit the same endpoint. Compression needs a window >= the main model's.
 auxiliary:
   compression:
@@ -22,15 +39,29 @@ auxiliary:
     base_url: "${LLM_BASE_URL}"
     api_key: "${LLM_API_KEY}"
     model: "${LLM_MODEL}"
+    timeout: 600          # summarising ~98k tokens on a 27B is slow
+    extra_body:
+      chat_template_kwargs:
+        enable_thinking: false
   background_review:
     enabled: false        # post-turn skill/memory review costs 2-3 min per turn on a local 27B.
                           # Run /refine manually when a task is worth distilling.
+  title_generation:
+    model_upgrade_enabled: false
+
+# Hermes's tool executor has its own deadline (420 s default) on top of terminal.timeout; a
+# dotnet build that runs 8 minutes would return tool_timeout. Long builds/tests should still run
+# with background=true, notify=true (see templates/AGENTS.md).
+timeouts:
+  tools:
+    sequential_call: 900
+    concurrent_batch: 900
 
 # ----------------------------------------------------------------------------- execution
 terminal:
   backend: "local"        # NOT docker: the docker backend skips Hermes's own command checks.
   cwd: "/workspace"
-  timeout: 300
+  timeout: 600            # foreground max; anything longer is auto-promoted to a background job
   home_mode: "auto"
   lifetime_seconds: 300
 
@@ -39,6 +70,9 @@ plugins:
   enabled:
     - git-guard           # /opt/data/plugins/git-guard (read-only bind mount)
   hook_callback_timeout: 10   # pre_tool_call fails CLOSED on timeout
+  hermes-memory-store:        # settings for memory.provider: holographic
+    auto_extract: false
+    default_trust: 0.5
 
 approvals:
   mode: manual            # every Hermes-flagged dangerous command asks in the dashboard chat
@@ -84,7 +118,19 @@ approvals:
     - "docker --context*"
 
 agent:
-  max_turns: 200
+  max_turns: 300
+  verify_on_stop: true    # refuse a final answer if code was edited and no build/test passed since
+  verify_guidance: true
+  max_verify_nudges: 3
+  coding_context: auto    # injects the coding brief + workspace block (branch, dirty files, commits)
+  coding_instructions: |
+    Run builds and test suites with background=true and notify=true; never block the turn on them.
+    Before a multi-file change run /plan-style reasoning first: list the files and the order.
+    Generated code may be gitignored: if search_files reports hits in ignored files, use the
+    terminal with `rg --no-ignore` or add the repo's .ignore negations.
+    Record every non-trivial finding (bug, root cause, decision, open question) on the kanban
+    board with kanban_create/kanban_comment AND in docs/findings/ in the repo. Keep MEMORY.md
+    for pointers only.
   disabled_toolsets:
     - code_execution      # sandboxed Python can spawn processes around the terminal guard
     - web                 # no internet egress; Firecrawl etc. would just fail
@@ -101,6 +147,37 @@ security:
   allow_private_urls: true    # the replica and the laptop host are private addresses by design
   tirith_enabled: false
 
+# Hard-stop the model when it repeats the identical failing call or an A/B/A/B cycle. Off for
+# interactive sessions by default; a 27B model needs it on.
+tool_loop_guardrails:
+  warnings_enabled: true
+  hard_stop_enabled: true
+  non_interactive_hard_stop_enabled: true
+
+# No C# language server ships with Hermes and install_strategy: auto would try npm over a network
+# that does not exist here. Off until a server is baked into the image (see README).
+lsp:
+  enabled: false
+
+# Kanban = the durable findings/bug/decision board (SQLite, dashboard tab, comments, history).
+# Everything that would spawn worker agents is OFF: one GPU, one operator. Enable the toolset
+# for the chat profile once: `docker compose exec hermes hermes tools enable kanban`.
+kanban:
+  dispatch_in_gateway: false
+  dispatch_profiles: []
+  auto_decompose: false
+  review_dispatch: false
+  notify_in_gateway: false
+
+# Sessions are searchable with session_search (FTS5). The default prunes ended sessions after 90
+# days, which makes recall lossy on long projects.
+sessions:
+  auto_prune: true
+  retention_days: 365
+
+goals:
+  max_turns: 20
+
 # ----------------------------------------------------------------------------- browser
 browser:
   backend: "off"          # built-in accessibility-tree tools: browser_navigate/snapshot/click/
@@ -112,25 +189,36 @@ browser:
 memory:
   memory_enabled: true
   user_profile_enabled: true
-  memory_char_limit: 2200
+  memory_char_limit: 2200   # pointers only ("findings live on the kanban board / docs/findings")
   user_char_limit: 1375
   write_approval: false
   nudge_interval: 10
-  # provider: holographic   # optional local SQLite+FTS5 provider; enable via `hermes memory setup`
+  provider: holographic     # local SQLite + FTS5 fact store, no embedding model, no network;
+                            # adds fact_store/fact_feedback tools and prefetches top facts per turn
+
 
 skills:
   creation_nudge_interval: 15
   write_approval: true    # new/changed skills wait in /skills pending until you approve them
   guard_agent_created: true
+  # Pin per-repo knowledge skills with `hermes curator pin <skill>` or the curator archives them
+  # after 30 days unused.
+
+curator:
+  enabled: true
+  consolidate: false
 
 compression:
   enabled: true
-  threshold: 0.50
+  threshold: 0.50         # windows under 512k are floored to 0.75 -> fires near 98k tokens at 131k
   target_ratio: 0.20
   tail_mode: lean
   protect_last_n: 20
   protect_first_n: 3
   in_place: true
+  proactive_prune_tokens: 0   # keep llama-server prefix-cache hits; no mid-turn pruning
+  context_timeout_seconds: 300
+  context_total_ceiling_seconds: 900
 
 delegation:
   max_concurrent_children: 2    # one GPU behind this endpoint
