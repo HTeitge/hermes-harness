@@ -1,0 +1,17 @@
+# Overlay: attach the egress proxy to the replica environment's compose network so the agent can
+# reach replica services by name (curl http://api:8080, browser http://web:3000) through the proxy.
+# The agent container itself is NOT attached: joining a non-internal network would give it a
+# route to the internet and defeat layer L3.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.replica.yml up -d
+#
+# Add the replica service names (or a glob) to EGRESS_ALLOW in .env.
+services:
+  edge:
+    networks:
+      - replica
+
+networks:
+  replica:
+    external: true
+    name: ${REPLICA_NETWORK:?set REPLICA_NETWORK in .env}

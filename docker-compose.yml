@@ -1,0 +1,132 @@
+# hermes-harness: Hermes Agent in Docker Desktop (Windows) for autonomous software-engineering
+# work against a dockerised replica environment, with git-origin mutation made impossible
+# by three independent layers (see README).
+#
+#   hermes        the agent (gateway + dashboard in one supervised container), NO route out
+#   edge          tinyproxy egress allowlist (the only way out) + socat ingress for 9119/8642
+#   docker-proxy  HAProxy in front of the Docker socket: read/exec only (lifecycle optional)
+#   hermes-init   one-shot: seeds config.yaml into the data volume
+#
+# Usage (PowerShell):  copy .env.example .env; edit; docker compose build; docker compose up -d
+# With a replica network: docker compose -f docker-compose.yml -f docker-compose.replica.yml up -d
+
+name: hermes-harness
+
+services:
+  hermes-init:
+    image: hermes-harness/hermes:${HERMES_TAG:-0.21.5}
+    build:
+      context: .
+      dockerfile: hermes.Dockerfile
+      args:
+        HERMES_TAG: ${HERMES_TAG:-0.21.5}
+    entrypoint: ["/bin/sh", "-c"]
+    user: "0:0"
+    network_mode: none
+    restart: "no"
+    volumes:
+      - hermes-data:/opt/data
+      - ./hermes-home:/seed:ro
+    command:
+      - |
+        set -e
+        mkdir -p /opt/data/git-guard /opt/data/plugins /opt/data/skills /opt/data/memories
+        if [ ! -f /opt/data/config.yaml ]; then cp /seed/config.yaml /opt/data/config.yaml; echo "[init] seeded config.yaml"; else echo "[init] config.yaml already present, left untouched"; fi
+        chown -R 10000:10000 /opt/data
+        echo "[init] done"
+
+  hermes:
+    image: hermes-harness/hermes:${HERMES_TAG:-0.21.5}
+    build:
+      context: .
+      dockerfile: hermes.Dockerfile
+      args:
+        HERMES_TAG: ${HERMES_TAG:-0.21.5}
+    container_name: hermes
+    restart: unless-stopped
+    depends_on:
+      hermes-init:
+        condition: service_completed_successfully
+      edge:
+        condition: service_started
+      docker-proxy:
+        condition: service_started
+    networks:
+      - hermes-internal          # internal: true -> no default route to the outside world
+    shm_size: "1g"               # headless Chromium
+    volumes:
+      - hermes-data:/opt/data
+      - ./hermes-home/plugins/git-guard:/opt/data/plugins/git-guard:ro
+      - ${WORKSPACE:?set WORKSPACE in .env}:/workspace
+    environment:
+      HERMES_UID: "10000"
+      HERMES_GID: "10000"
+      HERMES_WRITE_SAFE_ROOT: "/opt/data:/workspace"
+      # dashboard (chat tab = full TUI in the browser), reached via edge -> 127.0.0.1:9119
+      HERMES_DASHBOARD: "1"
+      HERMES_DASHBOARD_HOST: "0.0.0.0"
+      HERMES_DASHBOARD_PORT: "9119"
+      HERMES_DASHBOARD_BASIC_AUTH_USERNAME: ${HERMES_DASHBOARD_BASIC_AUTH_USERNAME:?set in .env}
+      HERMES_DASHBOARD_BASIC_AUTH_PASSWORD: ${HERMES_DASHBOARD_BASIC_AUTH_PASSWORD:?set in .env}
+      HERMES_DASHBOARD_BASIC_AUTH_SECRET: ${HERMES_DASHBOARD_BASIC_AUTH_SECRET:-}
+      # OpenAI-compatible API (optional)
+      API_SERVER_ENABLED: ${API_SERVER_ENABLED:-false}
+      API_SERVER_HOST: "0.0.0.0"
+      API_SERVER_PORT: "8642"
+      API_SERVER_KEY: ${API_SERVER_KEY:-}
+      # model endpoint, interpolated by config.yaml
+      LLM_BASE_URL: ${LLM_BASE_URL:?set in .env}
+      LLM_MODEL: ${LLM_MODEL:?set in .env}
+      LLM_API_KEY: ${LLM_API_KEY:?set in .env}
+      # L3: every outbound connection goes through the allowlisting proxy. There is no other route.
+      HTTP_PROXY: "http://edge:8888"
+      HTTPS_PROXY: "http://edge:8888"
+      http_proxy: "http://edge:8888"
+      https_proxy: "http://edge:8888"
+      NO_PROXY: "docker-proxy,edge,localhost,127.0.0.1"
+      no_proxy: "docker-proxy,edge,localhost,127.0.0.1"
+      # docker CLI inside the container talks to the filtered socket proxy
+      DOCKER_HOST: "tcp://docker-proxy:2375"
+      # git-guard knobs
+      GIT_GUARD_ROOT: "/opt/guard"
+      GIT_GUARD_ALLOW_CONTAINER_LIFECYCLE: ${ALLOW_CONTAINER_LIFECYCLE:-0}
+      PYTHONUTF8: "1"
+    command: ["gateway", "run"]
+
+  edge:
+    build: ./edge
+    image: hermes-harness/edge
+    container_name: hermes-edge
+    restart: unless-stopped
+    networks:
+      - hermes-internal
+      - default                  # the one with a route out
+    environment:
+      EGRESS_ALLOW: ${EGRESS_ALLOW:?set in .env}
+      INGRESS_TARGET: hermes
+    ports:
+      - "127.0.0.1:9119:9119"    # dashboard
+      - "127.0.0.1:8642:8642"    # API server (only answers when API_SERVER_ENABLED=true)
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  docker-proxy:
+    image: haproxy:2.9-alpine
+    container_name: hermes-docker-proxy
+    restart: unless-stopped
+    user: "0:0"                  # needs to open the Docker socket
+    networks:
+      - hermes-internal
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./docker-proxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+    environment:
+      ALLOW_LIFECYCLE: ${ALLOW_CONTAINER_LIFECYCLE:-0}
+
+networks:
+  hermes-internal:
+    internal: true
+  default: {}
+
+volumes:
+  hermes-data: {}

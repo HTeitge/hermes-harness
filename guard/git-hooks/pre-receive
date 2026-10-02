@@ -1,0 +1,3 @@
+#!/bin/sh
+echo "hermes-harness: receiving pushes is disabled in this sandbox." >&2
+exit 1

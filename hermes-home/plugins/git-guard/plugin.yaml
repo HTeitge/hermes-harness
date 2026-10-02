@@ -1,0 +1,6 @@
+name: git-guard
+version: "1.0.0"
+description: "Hard-deny guard for an engineering sandbox: no git push / origin mutation, no shell escapes around it (eval, sh -c payloads, wrappers, heredocs, inline interpreter code), no edits to git/Hermes/guard configuration, read/exec-only docker. Fails closed on anything it cannot parse."
+author: "hermes-harness (local)"
+provides_hooks:
+  - pre_tool_call

@@ -1,0 +1,26 @@
+# Layer L2 of hermes-harness. Baked into the image at /etc/gitconfig (root-owned, read-only).
+# Repo-local config could override this; writing repo-local config is denied by git-guard (L1)
+# and even a successful push attempt has no route and no credentials (L3).
+[core]
+	hooksPath = /opt/guard/git-hooks
+	fileMode = false
+	autocrlf = false
+[user]
+	name = Hermes Agent
+	email = hermes-agent@localhost
+[safe]
+	directory = *
+[credential]
+	helper =
+[url "disabled://git-push-is-blocked-by-hermes-harness/"]
+	pushInsteadOf = https://
+	pushInsteadOf = http://
+	pushInsteadOf = ssh://
+	pushInsteadOf = git://
+	pushInsteadOf = git@
+	pushInsteadOf = file://
+	pushInsteadOf = /
+[push]
+	default = nothing
+[advice]
+	detachedHead = false
