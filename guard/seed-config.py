@@ -32,7 +32,10 @@ def seed_assistant_profile() -> None:
         print(f"[init] {profile_dir}/config.yaml already present, left untouched")
     # per-profile .env: the multiplexed gateway brings up each profile's channels from ITS .env
     env_path = os.path.join(profile_dir, ".env")
-    wanted = {k: os.environ.get(k, "") for k in ("NTFY_TOPIC", "NTFY_PUBLISH_TOPIC", "NTFY_SERVER_URL",
+    # Under the multiplexed gateway a named profile resolves ${VAR} and key_env against ITS OWN .env
+    # only (never the container env), so the model variables must be copied in as well.
+    wanted = {k: os.environ.get(k, "") for k in ("LLM_MODEL", "LLM_BASE_URL", "LLM_API_KEY",
+                                                  "NTFY_TOPIC", "NTFY_PUBLISH_TOPIC", "NTFY_SERVER_URL",
                                                   "NTFY_TOKEN", "NTFY_HOME_CHANNEL", "NTFY_MARKDOWN")}
     wanted = {k: v for k, v in wanted.items() if v}
     if wanted:
@@ -42,7 +45,7 @@ def seed_assistant_profile() -> None:
         with open(env_path, "w", encoding="utf-8") as fh:
             fh.write("\n".join(lines) + "\n")
         os.chmod(env_path, 0o600)
-        print(f"[init] wrote {len(wanted)} NTFY_* keys into {env_path}")
+        print(f"[init] wrote {len(wanted)} keys (model + ntfy) into {env_path}")
     # workspace with the task/agenda files
     ws = os.path.join(data_dir, "assistant")
     if not os.path.exists(os.path.join(ws, "tasks.md")):

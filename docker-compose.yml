@@ -39,12 +39,6 @@ services:
       NTFY_TOKEN: ${NTFY_TOKEN:-}
       NTFY_MARKDOWN: "true"
       ASSISTANT_PROFILE: ${ASSISTANT_PROFILE:-}
-      NTFY_TOPIC: ${NTFY_TOPIC:-}
-      NTFY_PUBLISH_TOPIC: ${NTFY_TOPIC:-}
-      NTFY_HOME_CHANNEL: ${NTFY_TOPIC:-}
-      NTFY_SERVER_URL: ${NTFY_SERVER_URL:-}
-      NTFY_TOKEN: ${NTFY_TOKEN:-}
-      NTFY_MARKDOWN: "true"
     command:
       - |
         set -e
@@ -156,6 +150,9 @@ services:
       - ./docker-proxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
     environment:
       ALLOW_LIFECYCLE: ${ALLOW_CONTAINER_LIFECYCLE:-0}
+      # per-container endpoints (inspect/logs/exec/...) are allowed ONLY for names starting with this
+      # prefix, i.e. the replica's compose project. The harness's own containers stay unreachable.
+      CONTAINER_PREFIX: ${REPLICA_PROJECT:-replica}
 
 networks:
   hermes-internal:

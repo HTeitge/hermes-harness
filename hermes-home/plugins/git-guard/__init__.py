@@ -73,7 +73,47 @@ def _on_pre_tool_call(tool_name: str = "", args: Any = None, task_id: str = "", 
     return None
 
 
+_STRIP_ENV_DEFAULT = sorted(policy.SECRET_ENV_NAMES)
+
+
+def _register_secret_strip(ctx) -> None:
+    """Strip the kit's secret env vars from every subprocess the agent spawns.
+
+    Hermes's local backend removes only a fixed list of vendor key names (OPENAI_API_KEY, GH_TOKEN,
+    ...). Custom names such as LLM_API_KEY or ATLASSIAN_MCP_AUTH are inherited by the agent's
+    shell unless a terminal-environment provider declares them in ``strip_env_keys``; the union of
+    all registered providers' keys is applied by the local backend. This provider is never a
+    usable backend (is_available() is False); it exists only to carry the key list.
+    """
+    extra = [k.strip() for k in os.environ.get("GIT_GUARD_STRIP_ENV", "").split(",") if k.strip()]
+    keys = frozenset(_STRIP_ENV_DEFAULT + extra)
+    try:
+        from agent.terminal_env_provider import TerminalEnvironmentProvider
+
+        class _SecretStripProvider(TerminalEnvironmentProvider):
+            name = "git_guard_secret_scrub"
+            display_name = "git-guard secret scrub"
+            is_remote = False
+            is_container = False
+
+            @property
+            def strip_env_keys(self) -> frozenset:
+                return keys
+
+            def is_available(self) -> bool:
+                return False
+
+            def create_environment(self, *args, **kwargs):  # pragma: no cover - never a backend
+                raise RuntimeError("git_guard_secret_scrub is not an executable backend")
+
+        ctx.register_terminal_environment_provider(_SecretStripProvider())
+        logger.info("git-guard: %d secret env names will be stripped from agent subprocesses", len(keys))
+    except Exception as exc:  # noqa: BLE001 - the text-level guards in policy.py still apply
+        logger.warning("git-guard: could not register secret strip provider (%s); relying on command-level checks", exc)
+
+
 def register(ctx) -> None:
     ctx.register_hook("pre_tool_call", _on_pre_tool_call)
+    _register_secret_strip(ctx)
     logger.info("git-guard registered (HERMES_HOME=%s, guard root=%s)",
                 os.environ.get("HERMES_HOME", "~/.hermes"), os.environ.get("GIT_GUARD_ROOT", "/opt/guard"))

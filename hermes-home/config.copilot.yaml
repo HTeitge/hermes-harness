@@ -4,7 +4,9 @@
 # Fallback to the local model is wired at every point Copilot is used:
 #   - a `/model planner --once` turn that fails (402 credits exhausted, 429, 5xx, 401/403)
 #     falls back through `fallback_providers` -> local, for that turn, then restores
-#   - /review's subagent falls back through auxiliary.review.fallback_providers -> local
+#   - /review: NOT pinned to Copilot here (auxiliary.review has no fallback path in v0.21.5).
+#     For a cloud review run `/model planner --once` then `/review`: the reviewer inherits the
+#     turn's model AND the agent-level fallback chain, so a dead Copilot falls back to local.
 #   - goal_judge and /btw fall back through their fallback_chain -> local
 #   - a MoA reference that fails becomes a "[failed: ...]" note; the local aggregator carries on
 #
@@ -26,14 +28,6 @@ fallback:
   min_switch_reset_seconds: 0   # a rate-limited Copilot is swapped for local immediately
 
 auxiliary:
-  review:                       # /review -> reviewer subagent on Copilot
-    provider: copilot
-    model: "${COPILOT_MODEL}"
-    fallback_providers:
-      - provider: custom
-        model: "${LLM_MODEL}"
-        base_url: "${LLM_BASE_URL}"
-        key_env: LLM_API_KEY
   goal_judge:                   # /goal completion judging + /goal draft contracts
     provider: copilot
     model: "${COPILOT_MODEL}"
@@ -66,5 +60,5 @@ moa:
         - provider: copilot
           model: "${COPILOT_MODEL}"
       aggregator:
-        provider: custom
+        provider: custom          # bare `custom` resolves to model.base_url; keep model.provider: custom
         model: "${LLM_MODEL}"

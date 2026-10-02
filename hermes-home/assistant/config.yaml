@@ -32,6 +32,7 @@ auxiliary:
     api_key: "${LLM_API_KEY}"
     model: "${LLM_MODEL}"
     timeout: 600
+    no_progress_timeout: 300
   background_review:
     enabled: false
   title_generation:
@@ -64,7 +65,7 @@ approvals:
 
 agent:
   max_turns: 60
-  coding_context: off
+  coding_context: "off"
   disabled_toolsets:
     - code_execution
     - web
@@ -75,7 +76,6 @@ agent:
     - tts
     - delegation
     - homeassistant
-    - messaging
     - spotify
     - discord
     - discord_admin
@@ -107,4 +107,4 @@ compression:
   proactive_prune_tokens: 0
 
 display:
-  memory_notifications: off
+  memory_notifications: "off"

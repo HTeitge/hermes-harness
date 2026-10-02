@@ -1,7 +1,14 @@
 #!/bin/sh
-# Smoke-test the three guard layers from INSIDE the hermes container (as the agent user):
+# Smoke-test the guard layers from INSIDE the hermes container, AS THE AGENT USER (uid 10000):
 #   docker compose exec hermes /opt/guard/verify.sh
-# Exit code 0 = every check passed.
+# The container runs as root (s6 init), so re-exec ourselves as the agent user first; the
+# read-only checks are meaningless as root.
+if [ "$(id -u)" = "0" ]; then
+  if command -v s6-setuidgid >/dev/null 2>&1; then exec s6-setuidgid hermes /bin/sh "$0" "$@"; fi
+  if command -v setpriv >/dev/null 2>&1; then exec setpriv --reuid=10000 --regid=10000 --clear-groups /bin/sh "$0" "$@"; fi
+  echo "FAIL  cannot drop to the agent user (no s6-setuidgid/setpriv); run: docker compose exec -u 10000 hermes $0"; exit 1
+fi
+echo "running as uid $(id -u) ($(id -un 2>/dev/null))"
 fail=0
 ok()   { echo "PASS  $1"; }
 bad()  { echo "FAIL  $1"; fail=1; }

@@ -16,6 +16,8 @@ absent so the agent does not spend turns discovering it.
   search the web, do not `curl` external hosts, do not wait for downloads that never come.
 - `docker` works, but only `ps`, `logs`, `inspect`, `top`, `stats`, `exec` (and start/stop/restart
   if the operator enabled it). Use `docker logs --tail 300 <service>` to read deployment logs.
+- `docker` is further limited to containers named `<replica-project>-*`; the harness's own
+  containers cannot be inspected or exec'd into.
 - The browser tools reach the replica UI and the laptop's own services by name, e.g.
   `http://web:3000` or `http://host.docker.internal:5173`. Use `browser_console` for JS errors.
 - Python `execute_code` is disabled. Use the terminal tool.

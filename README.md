@@ -40,8 +40,13 @@ source at that tag. Bump `HERMES_TAG` deliberately and re-run `verify.sh`.
 | **L3 environment layer** | agent on an `internal: true` network; only `edge` has a route out and it allowlists hostnames; **no SSH key, PAT or credential helper exists in the container** | a push that somehow passes L1 and L2 still has no transport and no identity | Docker networking |
 
 L1 is the only layer the model ever sees; L2 and L3 are what make the guarantee hold. Each layer
-has known gaps on its own (a regex guard is a speed bump; repo-local config overrides system
-config; a proxy allowlist can be mis-edited). Together they fail independently.
+has known gaps on its own (a parser guard is a speed bump; repo-local config overrides system
+config; a proxy allowlist can be mis-edited). Together they fail independently. The guard has
+been through one adversarial review (about 180 bypass shapes plus 40,000 fuzz inputs); the
+six bypasses it found (input redirection and here-strings reading credential stores, one-line
+`function` bodies, `hash -p` rebinding, lone-CR separators, writes into the token directory)
+are fixed and locked in by `tests/test_policy.py::test_redteam_round1`. Treat "no known
+bypass" as the honest claim, not "no bypass".
 
 ## Prerequisites
 
@@ -176,7 +181,7 @@ auxiliary job use a different provider. With `COPILOT_MODEL` and `COPILOT_GITHUB
 | Where Copilot is used | How | Falls back to local when |
 |---|---|---|
 | Planning turn | `/model planner --once` then `/plan <task>`; next turn runs on Copilot, then Qwen is restored | 402 credits exhausted, 429, 5xx, 401/403: `fallback_providers` takes that turn |
-| Code review | `/review` spawns the reviewer subagent on Copilot | `auxiliary.review.fallback_providers` |
+| Code review | `/model planner --once` then `/review`; the reviewer inherits that turn's model | the agent-level `fallback_providers` chain (Hermes has no fallback for a pinned `auxiliary.review`, so it is deliberately not pinned) |
 | `/goal` judge and `/goal draft` contracts | `auxiliary.goal_judge` | `fallback_chain` |
 | `/btw <question>` | `auxiliary.side_question`, answered outside the transcript | `fallback_chain` |
 | Advisor on every user turn | Mixture-of-Agents preset `plan`: Copilot advises, Qwen aggregates and acts. `/moa <prompt>` for one turn, `/model plan --provider moa` for the session | a failed advisor becomes a `[failed: ...]` note, Qwen continues |
@@ -188,8 +193,8 @@ Setup notes:
 
 - The token must carry only the "Copilot Requests" permission. A token with repository write
   access would be a push credential inside the container and would undermine layer L3.
-  Hermes strips `*TOKEN*` variables from the agent's shell, and git-guard denies `GITHUB_*`,
-  `GH_*` and `COPILOT_*` overrides, but the scope of the token is the real control.
+  git-guard strips the kit's secret variables from the agent's shell (see "Secrets" below) and
+  denies `GITHUB_*`, `GH_*` and `COPILOT_*` overrides, but the scope of the token is the real control.
 - Add `github.com,api.github.com,api.githubcopilot.com` (and the business or enterprise host if
   your plan uses one) to `EGRESS_ALLOW`. `verify.sh` checks reachability and the token
   exchange when `COPILOT_MODEL` is set.
@@ -233,8 +238,15 @@ update, edit, delete, add, transition, move, assign or comment. OAuth is possibl
 (`auth: oauth`, then `hermes mcp login atlassian`), but corporate Atlassian often rejects
 dynamic client registration; the scoped token is the reliable route.
 
-Credential stores are off-limits to the agent: git-guard blocks any shell command or
-`read_file` naming `mcp-tokens/`, `.env`, `auth.json`, `.copilot_jwt.json` or `.ssh/`.
+**Secrets.** Hermes itself strips only a fixed list of vendor key names from the agent's
+subprocesses; custom names such as `LLM_API_KEY` or `ATLASSIAN_MCP_AUTH` would be inherited.
+git-guard therefore registers them for stripping through Hermes's terminal-environment
+registry (add more with `GIT_GUARD_STRIP_ENV=NAME1,NAME2`), and at the command level blocks
+`env`/`printenv`/bare `set`/`export -p`, any `$NAME` expansion of a secret-looking variable,
+reads under `/proc/<pid>/`, inline interpreter code that touches the environment, and any
+command or `read_file` naming `mcp-tokens/`, `.env`, `auth.json`, `.copilot_jwt.json` or
+`.ssh/`. The gateway process and the agent's shell share one uid, so `/proc` is the residual
+path that only the command-level rule covers.
 
 ## Personal assistant profile
 
@@ -356,9 +368,19 @@ cp push login -H --context`; `execute_code` entirely.
 - **Approval fatigue**: `approvals.mode: manual` prompts for every Hermes-flagged pattern
   (rm -rf, chmod 777, DROP TABLE, ...). Use `[a]lways` in the prompt to grow `command_allowlist`
   for the ones you are happy with; the deny floor and git-guard still apply.
-- **Not verified on Docker Desktop itself**: compose rendering, the egress proxy and the socket
-  filter were validated on Linux with Podman (proxy end to end against the real endpoint; HAProxy
-  ACLs against a live API socket: every mutation path 403, every read/exec path forwarded).
+- **Docker socket scope.** The proxy allows per-container operations only for names starting
+  with `REPLICA_PROJECT`; everything else, including the harness's own containers (whose
+  `inspect` output would reveal this stack's secrets) and raw hex ids, is refused. `docker exec`
+  into a replica container still runs a command inside that container, which has whatever
+  network that container has: keep replica services off the internet, or treat exec as a
+  deliberate hole.
+- **Egress allowlist is exact and case-sensitive** (tinyproxy fnmatch on the hostname; a
+  subdomain of an allowed host is refused). With the replica overlay, replica containers can
+  also use the edge proxy to reach allowlisted hosts; that is by design but worth knowing.
+- **Not verified on Docker Desktop itself**: the egress proxy and the socket filter were
+  validated on Linux with Podman (proxy end to end against the real endpoint; HAProxy ACLs
+  against a live API socket: every mutation path 403, every read/exec path forwarded), and the
+  compose file against the real `docker compose` parser.
 
 ## Layout
 

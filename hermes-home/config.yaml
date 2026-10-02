@@ -45,6 +45,7 @@ auxiliary:
     api_key: "${LLM_API_KEY}"
     model: "${LLM_MODEL}"
     timeout: 600          # summarising ~98k tokens on a 27B is slow
+    no_progress_timeout: 300   # stream-stall budget; the default 60 s trips on a slow first token
     extra_body:
       chat_template_kwargs:
         enable_thinking: false
@@ -64,7 +65,8 @@ timeouts:
 
 # ----------------------------------------------------------------------------- execution
 terminal:
-  backend: "local"        # NOT docker: the docker backend skips Hermes's own command checks.
+  backend: "local"        # NOT docker: that backend relaxes the command checks (container boundary) and
+                          # spins up its own sandbox container; the guard model here needs local.
   cwd: "/workspace"
   timeout: 600            # foreground max; anything longer is auto-promoted to a background job
   home_mode: "auto"
@@ -126,8 +128,8 @@ agent:
   max_turns: 300
   verify_on_stop: true    # refuse a final answer if code was edited and no build/test passed since
   verify_guidance: true
-  max_verify_nudges: 3
-  coding_context: auto    # injects the coding brief + workspace block (branch, dirty files, commits)
+  max_verify_nudges: 3    # applies to plugin pre_verify hooks; the built-in nudge is capped at 2 in code
+  coding_context: "auto"  # injects the coding brief + workspace block (branch, dirty files, commits)
   coding_instructions: |
     Run builds and test suites with background=true and notify=true; never block the turn on them.
     Before a multi-file change run /plan-style reasoning first: list the files and the order.
@@ -143,7 +145,6 @@ agent:
     - image_gen
     - tts
     - homeassistant
-    - messaging
     - spotify
     - discord
     - discord_admin
@@ -242,4 +243,4 @@ delegation:
   subagent_auto_approve: false
 
 display:
-  memory_notifications: on
+  memory_notifications: "on"    # quoted: bare on/off parse as YAML booleans and are misread

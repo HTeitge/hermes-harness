@@ -1,0 +1,13 @@
+# Scripts and configs are copied into Linux images and executed there: they must stay LF even
+# on a Windows checkout (core.autocrlf=true would otherwise break every shebang).
+* text=auto eol=lf
+*.sh text eol=lf
+*.py text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+*.cfg text eol=lf
+*.conf text eol=lf
+*.md text eol=lf
+guard/git-hooks/* text eol=lf
+edge/entrypoint.sh text eol=lf
+*.png binary

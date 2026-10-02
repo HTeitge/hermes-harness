@@ -25,8 +25,12 @@ def _load(monkeypatch, tmp_path):
 def test_register_and_block(monkeypatch, tmp_path):
     mod = _load(monkeypatch, tmp_path)
     hooks = {}
-    ctx = types.SimpleNamespace(register_hook=lambda name, fn: hooks.setdefault(name, fn))
+    registered = []
+    ctx = types.SimpleNamespace(register_hook=lambda name, fn: hooks.setdefault(name, fn),
+                                register_terminal_environment_provider=lambda p: registered.append(p))
     mod.register(ctx)
+    # without the Hermes package importable the strip provider is skipped gracefully
+    assert registered == [] or registered[0].strip_env_keys
     cb = hooks["pre_tool_call"]
     out = cb(tool_name="terminal", args={"command": "git push"}, task_id="t1", session_id="s1",
              tool_call_id="c", turn_id="u", api_request_id="a", middleware_trace=[])

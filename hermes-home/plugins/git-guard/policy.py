@@ -121,6 +121,9 @@ ALWAYS_BLOCKED = {
     ".": "sourcing a file executes it opaquely",
     "trap": "trap defers execution past the guard",
     "alias": "alias can shadow git",
+    "hash": "hash -p can rebind a name to the git binary",
+    "enable": "enable can load shell builtins from arbitrary files",
+    "bind": "bind -x runs commands on keystrokes",
     "crontab": "crontab defers execution past the guard",
     "at": "at defers execution past the guard",
     "batch": "batch defers execution past the guard",
@@ -239,14 +242,29 @@ DOCKER_GROUP_LIFECYCLE = {("container", "start"), ("container", "stop"), ("conta
 
 KEYWORDS_STRIP_LEADING = {"{", "}", "!", "if", "while", "until", "then", "do", "else", "elif", "time", "coproc"}
 KEYWORDS_SEPARATOR = {"then", "do", "else", "elif", "fi", "done", "esac"}
-KEYWORDS_NOEXEC_SEGMENT = {"for", "case", "select", "function", "in"}
+KEYWORDS_NOEXEC_SEGMENT = {"for", "case", "select", "in"}
 
 SEPARATOR_TOKENS = {";", ";;", ";&", ";;&", "&&", "||", "|", "|&", "&", "(", ")"}
 REDIRECT_OUT_PREFIXES = (">", "&>", ">>", ">|", ">&")
 REDIRECT_TOKENS = {">", ">>", "<", "<<<", "&>", "&>>", ">&", "<&", ">|", "<>"}
 
+# Secret-bearing environment variables: never expanded, dumped or read via /proc by the agent.
+# (Hermes strips only a fixed list of vendor key names from subprocesses; these custom names are
+# ALSO registered for stripping by __init__.py, so this is belt and braces.)
+SECRET_ENV_NAMES = {
+    "LLM_API_KEY", "ATLASSIAN_MCP_AUTH", "NTFY_TOKEN", "API_SERVER_KEY", "COPILOT_GITHUB_TOKEN",
+    "GITHUB_TOKEN", "GH_TOKEN", "HERMES_DASHBOARD_BASIC_AUTH_PASSWORD", "HERMES_DASHBOARD_BASIC_AUTH_SECRET",
+}
+_SECRET_ENV_REF_RE = re.compile(
+    r"\$\{?!?(?:" + "|".join(sorted(SECRET_ENV_NAMES)) + r"|[A-Za-z_]*(?:_TOKEN|_SECRET|_PASSWORD|_API_KEY|_AUTH))\b")
+_PROC_SAFE = {"/proc/cpuinfo", "/proc/meminfo", "/proc/loadavg", "/proc/uptime", "/proc/version", "/proc/stat",
+              "/proc/mounts", "/proc/filesystems", "/proc/net/dev"}
+ENV_DUMPERS = {"printenv": "prints the environment (contains credentials)",
+               "compgen": "lists shell variables"}
+
 SUBST_PLACEHOLDER = "__GG_SUBST__"
 HEREDOC_PLACEHOLDER = "__GG_HEREDOC__"
+HERESTRING_PLACEHOLDER = "__GG_HERESTRING__"
 
 # Strict text heuristics for opaque code we cannot parse (inline interpreter code, scripts).
 _STRICT_PATTERNS = [
@@ -267,6 +285,8 @@ _STRICT_PATTERNS = [
     (re.compile(r"\bssh\b[^\n]{0,120}\bgit@"), "ssh to a git host"),
 ]
 _STRICT_INLINE_EXTRA = [
+    (re.compile(r"(?<![A-Za-z0-9_])(os\.environ|getenv|process\.env|ENV\[|\$env:|/proc/\d+/environ|/proc/self/environ|"
+                r"System\.Environment|GetEnvironmentVariable)"), "environment read in inline code (credentials)"),
     (re.compile(r"\b(b64decode|base64\s+(-d|--decode|-D)\b|fromCharCode|codecs\.decode\([^\n]{0,80}rot)"),
      "decode-then-execute obfuscation"),
     (re.compile(r"(\\x[0-9a-fA-F]{2}){3,}"), "hex-escaped string in inline code"),
@@ -383,7 +403,11 @@ def _prescan(s: str) -> _Scan:
             out.append(" " + SUBST_PLACEHOLDER + " ")
             i = j + 1
             continue
-        if c == "<" and nxt == "<" and s[i + 2:i + 3] != "<":  # heredoc
+        if c == "<" and nxt == "<" and s[i + 2:i + 3] == "<":  # here-string: operand stays a word
+            out.append(" " + HERESTRING_PLACEHOLDER + " ")
+            i += 3
+            continue
+        if c == "<" and nxt == "<":  # heredoc
             k = i + 2
             strip_tabs = False
             if s[k:k + 1] == "-":
@@ -416,6 +440,13 @@ def _prescan(s: str) -> _Scan:
         if c == "#" and at_word_start():
             while i < n and s[i] != "\n":
                 i += 1
+            continue
+        if c in "\x0b\x0c" or (c == "\r" and nxt != "\n"):
+            out.append(" ; ")  # vertical tab / form feed / lone CR: treat as statement separators
+            i += 1
+            continue
+        if c == "\r" and nxt == "\n":
+            i += 1  # CRLF -> handled by the newline branch next
             continue
         if c == "\n":
             out.append(" ; ")
@@ -471,22 +502,26 @@ class _Segment:
     out_targets: List[str]
     has_heredoc: bool
     stdin_from_pipe: bool
+    in_targets: List[str] = field(default_factory=list)
+    herestrings: List[str] = field(default_factory=list)
 
 
 def _segments(tokens: Sequence[str]) -> List[_Segment]:
     segs: List[_Segment] = []
     cur: List[str] = []
     outs: List[str] = []
+    ins: List[str] = []
+    heres: List[str] = []
     has_heredoc = False
     prev_sep: Optional[str] = None
     i = 0
     n = len(tokens)
 
     def flush(sep: Optional[str]) -> None:
-        nonlocal cur, outs, has_heredoc, prev_sep
-        if cur or outs or has_heredoc:
-            segs.append(_Segment(cur, outs, has_heredoc, prev_sep in {"|", "|&"}))
-        cur, outs, has_heredoc = [], [], False
+        nonlocal cur, outs, ins, heres, has_heredoc, prev_sep
+        if cur or outs or ins or heres or has_heredoc:
+            segs.append(_Segment(cur, outs, has_heredoc, prev_sep in {"|", "|&"} or bool(heres), ins, heres))
+        cur, outs, ins, heres, has_heredoc = [], [], [], [], False
         prev_sep = sep
 
     while i < n:
@@ -508,13 +543,18 @@ def _segments(tokens: Sequence[str]) -> List[_Segment]:
                     i += 1
                 else:
                     i += 2
-                if tok.startswith(REDIRECT_OUT_PREFIXES) and target and not re.fullmatch(r"-|[0-9]+", target):
-                    outs.append(target)
+                if target and not re.fullmatch(r"-|[0-9]+", target):
+                    (outs if tok.startswith(REDIRECT_OUT_PREFIXES) else ins).append(target)
                 continue
             raise GuardError(f"unrecognised shell operator {tok!r}")
         if tok == HEREDOC_PLACEHOLDER:
             has_heredoc = True
             i += 1
+            continue
+        if tok == HERESTRING_PLACEHOLDER:
+            operand = tokens[i + 1] if i + 1 < n and not _is_punct(tokens[i + 1]) else ""
+            heres.append(operand)
+            i += 2 if operand else 1
             continue
         if tok in KEYWORDS_SEPARATOR:
             flush(";")
@@ -592,7 +632,8 @@ def _is_protected_path(tok: str) -> bool:
             return True
         if base.startswith(hh + "/"):
             rest = base[len(hh) + 1:].split("/", 1)[0]
-            if rest in {"config.yaml", ".env", "plugins", "hooks", "auth.json", "git-guard", "vault", "profiles"}:
+            if rest in {"config.yaml", ".env", "plugins", "hooks", "auth.json", "git-guard", "vault", "profiles",
+                        "mcp-tokens", ".copilot_jwt.json", "memory_store.db", "state.db", "kanban.db", "memories"}:
                 return True
         if base.startswith(_guard_root() + "/") or base == _guard_root():
             return True
@@ -746,6 +787,8 @@ def _docker_rules(argv: List[str]) -> Optional[str]:
         return None
     sub = rest[i]
     nxt = rest[i + 1] if i + 1 < len(rest) else ""
+    if any(a in {"hermes", "hermes-edge", "hermes-docker-proxy"} or a.startswith("hermes-harness") for a in rest):
+        return "docker commands may not target the harness's own containers (inspect would expose credentials)"
     if sub in DOCKER_READ_SUBS or sub in DOCKER_EXEC_SUBS:
         return None
     if sub in DOCKER_LIFECYCLE_SUBS:
@@ -759,12 +802,23 @@ def _docker_rules(argv: List[str]) -> Optional[str]:
 
 def _analyze_segment(seg: _Segment, scan: _Scan, ctx: _Ctx) -> Optional[str]:
     argv = list(seg.argv)
-    # redirect targets
-    for t in seg.out_targets:
-        if _is_protected_path(t):
-            return f"redirect writes to protected path {t!r}"
+    # redirect targets: outputs must not hit protected paths; inputs must not read credential stores
+    for t in seg.out_targets + seg.in_targets:
         if t == SUBST_PLACEHOLDER or "$" in t:
             return "redirect target is not a literal"
+        if _is_secret_store(t) or _is_secret_store(os.path.normpath(_norm_path_token(t))):
+            return f"redirect names credential store {t!r}"
+    for t in seg.out_targets:
+        if _is_protected_path(t) or _is_protected_path(os.path.normpath(_norm_path_token(t))):
+            return f"redirect writes to protected path {t!r}"
+    for h in seg.herestrings:
+        if _SECRET_ENV_REF_RE.search(h):
+            return "here-string expands a credential-bearing environment variable"
+    # ksh-style `function NAME { body }` on one line: analyse the body, do not skip it
+    if argv[:1] == ["function"]:
+        argv = argv[2:] if len(argv) > 1 else []
+        while argv and argv[0] == "{":
+            argv.pop(0)
     # leading keywords
     while argv and argv[0] in KEYWORDS_STRIP_LEADING:
         argv.pop(0)
@@ -775,6 +829,11 @@ def _analyze_segment(seg: _Segment, scan: _Scan, ctx: _Ctx) -> Optional[str]:
     for t in argv:
         if _is_secret_store(t):
             return f"{t!r} is a credential store; commands may not read or name it"
+        if _SECRET_ENV_REF_RE.search(t):
+            return f"{t!r} expands a credential-bearing environment variable"
+        nt = _norm_path_token(t)
+        if (nt.startswith("/proc/") or nt == "/proc") and nt not in _PROC_SAFE:
+            return f"{t!r}: /proc exposes other processes' environment and memory"
     # leading env assignments
     while argv and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", argv[0], re.S):
         name = argv[0].split("=", 1)[0]
@@ -801,8 +860,15 @@ def _dispatch(argv: List[str], seg: _Segment, scan: _Scan, ctx: _Ctx) -> Optiona
 
         if name in ALWAYS_BLOCKED:
             return f"{name}: {ALWAYS_BLOCKED[name]}"
+        if name in ENV_DUMPERS:
+            return f"{name}: {ENV_DUMPERS[name]}"
+        if name == "set" and all(a.startswith(("-", "+")) is False for a in argv[1:]) and len(argv) == 1:
+            return "bare `set` prints every shell variable (contains credentials)"
 
         if name in {"export", "declare", "typeset", "readonly", "unset", "local"}:
+            positional = [a for a in argv[1:] if not a.startswith("-")]
+            if not positional or "-p" in argv[1:]:
+                return f"{name} with no assignment prints variables (contains credentials)"
             for a in argv[1:]:
                 if a.startswith("-"):
                     continue
@@ -851,6 +917,13 @@ def _dispatch(argv: List[str], seg: _Segment, scan: _Scan, ctx: _Ctx) -> Optiona
                 r = _strict_scan(body, inline=True)
                 if r:
                     return f"heredoc fed to {name} contains {r}"
+        if seg.herestrings and name in (SHELLS | INTERP_FILE_RUNNERS | {"eval", "xargs"}):
+            for h in seg.herestrings:
+                r = _strict_scan(h, inline=True)
+                if r:
+                    return f"here-string fed to {name} contains {r}"
+            if name in SHELLS:
+                return f"{name} reading a script from a here-string is denied"
         return None
     finally:
         ctx.depth -= 1
@@ -906,6 +979,12 @@ def _shell_rules(argv: List[str], seg: _Segment, scan: _Scan, ctx: _Ctx) -> Opti
         return _scan_file_operand(file_operand, ctx, inline=False) or (
             None if _read_small_file(_norm_path_token(file_operand), ctx.workdir) is not None
             else f"{name}: script {file_operand!r} is not readable for inspection")
+    if seg.herestrings:
+        for h in seg.herestrings:
+            r = _strict_scan(h, inline=True)
+            if r:
+                return f"here-string script contains {r}"
+        return f"{name} reading a script from a here-string is denied"
     if seg.stdin_from_pipe or seg.has_heredoc:
         if seg.has_heredoc:
             for body in scan.heredocs:
@@ -960,7 +1039,9 @@ def _wrapper_rules(name: str, argv: List[str], seg: _Segment, scan: _Scan, ctx: 
     i += skip_positional
     inner = argv[i:]
     if not inner:
-        return None if name != "xargs" else None  # xargs with no command = echo
+        if name == "env":
+            return "bare `env` prints the environment (contains credentials)"
+        return None  # xargs with no command = echo; other wrappers with nothing to run are no-ops
     if name == "sudo" and inner[0] in {"-i", "-s"}:
         return "sudo shell is denied"
     return _dispatch(inner, seg, scan, ctx)
@@ -1059,6 +1140,12 @@ def _interpreter_rules(name: str, argv: List[str], seg: _Segment, scan: _Scan, c
         if name in INTERP_FILE_RUNNERS:
             return _scan_file_operand(a, ctx, inline=False)
         return None
+    if seg.herestrings:
+        for h in seg.herestrings:
+            r = _strict_scan(h, inline=True)
+            if r:
+                return f"here-string fed to {name} contains {r}"
+        return None
     if not args and (seg.stdin_from_pipe or seg.has_heredoc):
         if seg.has_heredoc:
             for body in scan.heredocs:
@@ -1146,15 +1233,19 @@ def check_tool_call(tool_name: str, args) -> Optional[str]:
                 return f"{tool_name} to protected path {p!r} is denied"
             return None
         if tool_name == "skill_manage":
-            p = args.get("file_path")
-            if isinstance(p, str) and _is_protected_path(p):
-                return f"skill_manage file_path {p!r} is protected"
-            for key in ("content", "file_content", "new_string"):
-                v = args.get(key)
-                if isinstance(v, str):
-                    r = _strict_scan(v, inline=False)
-                    if r:
-                        return f"skill content contains {r}"
+            # top-level (legacy) keys and the batch `operations: [...]` shape
+            ops = [args] + [o for o in (args.get("operations") or []) if isinstance(o, dict)] \
+                if isinstance(args.get("operations"), list) else [args]
+            for op in ops:
+                p = op.get("file_path")
+                if isinstance(p, str) and (_is_protected_path(p) or _is_secret_store(p) or ".." in p.split("/")):
+                    return f"skill_manage file_path {p!r} is protected"
+                for key in ("content", "file_content", "new_string"):
+                    v = op.get(key)
+                    if isinstance(v, str):
+                        r = _strict_scan(v, inline=False)
+                        if r:
+                            return f"skill content contains {r}"
             return None
         if tool_name == "process_manage":
             for key, v in args.items():
