@@ -5,6 +5,11 @@
 # Secrets never go here: they come from the compose .env via environment variables.
 # Written against Hermes v0.21.5 (v2026.9.24). Keys verified against cli-config.yaml.example
 # and website/docs at that tag.
+#
+# _config_version must equal the image's latest migration (46 for v0.21.5). A LOWER number
+# re-runs every migration above it (v31/v32 would flip verify_on_stop back to false); a higher
+# image simply runs the newer steps. Bump it together with HERMES_TAG.
+_config_version: 46
 
 # ----------------------------------------------------------------------------- model
 model:
@@ -160,8 +165,14 @@ lsp:
   enabled: false
 
 # Kanban = the durable findings/bug/decision board (SQLite, dashboard tab, comments, history).
-# Everything that would spawn worker agents is OFF: one GPU, one operator. Enable the toolset
-# for the chat profile once: `docker compose exec hermes hermes tools enable kanban`.
+# Everything that would spawn worker agents is OFF: one GPU, one operator. kanban.db is created
+# lazily; no `hermes kanban init` or `hermes tools enable` step is needed because the toolset is
+# pre-enabled for the cli platform (which is also what the dashboard Chat tab uses).
+platform_toolsets:
+  cli:
+    - hermes-cli
+    - kanban
+
 kanban:
   dispatch_in_gateway: false
   dispatch_profiles: []
@@ -201,6 +212,11 @@ skills:
   creation_nudge_interval: 15
   write_approval: true    # new/changed skills wait in /skills pending until you approve them
   guard_agent_created: true
+  # All bundled skills (systematic-debugging, test-driven-development, requesting-code-review,
+  # spike, simplify-code, ...) are available by default. Project-local skills under
+  # <repo>/.hermes/skills load only for EXACT git roots listed here (hermes skills trust <path>).
+  # trusted_project_dirs:
+  #   - /workspace/my-repo
   # Pin per-repo knowledge skills with `hermes curator pin <skill>` or the curator archives them
   # after 30 days unused.
 

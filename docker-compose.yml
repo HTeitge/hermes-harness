@@ -29,12 +29,31 @@ services:
       - ./hermes-home:/seed:ro
     environment:
       COPILOT_MODEL: ${COPILOT_MODEL:-}
+      FLOWGEAR_MCP_URL: ${FLOWGEAR_MCP_URL:-}
+      ATLASSIAN_MCP_AUTH: ${ATLASSIAN_MCP_AUTH:-}
+      # ntfy push channel for the assistant profile (push-only: no inbound allowlist)
+      NTFY_TOPIC: ${NTFY_TOPIC:-}
+      NTFY_PUBLISH_TOPIC: ${NTFY_TOPIC:-}
+      NTFY_HOME_CHANNEL: ${NTFY_TOPIC:-}
+      NTFY_SERVER_URL: ${NTFY_SERVER_URL:-}
+      NTFY_TOKEN: ${NTFY_TOKEN:-}
+      NTFY_MARKDOWN: "true"
+      ASSISTANT_PROFILE: ${ASSISTANT_PROFILE:-}
+      NTFY_TOPIC: ${NTFY_TOPIC:-}
+      NTFY_PUBLISH_TOPIC: ${NTFY_TOPIC:-}
+      NTFY_HOME_CHANNEL: ${NTFY_TOPIC:-}
+      NTFY_SERVER_URL: ${NTFY_SERVER_URL:-}
+      NTFY_TOKEN: ${NTFY_TOKEN:-}
+      NTFY_MARKDOWN: "true"
     command:
       - |
         set -e
         mkdir -p /opt/data/git-guard /opt/data/plugins /opt/data/skills /opt/data/memories
-        /opt/guard/seed-config.py /seed /opt/data/config.yaml
         chown -R 10000:10000 /opt/data
+        /opt/guard/seed-config.py /seed /opt/data/config.yaml
+        # everything the seed created belongs to the agent user, except the guard copies, which stay root-owned
+        find /opt/data -maxdepth 3 -newer /opt/guard/seed-config.py -not -path '*/plugins/git-guard*' -exec chown 10000:10000 {} + 2>/dev/null || true
+        chown 10000:10000 /opt/data /opt/data/profiles /opt/data/profiles/* 2>/dev/null || true
         echo "[init] done"
 
   hermes:
@@ -70,7 +89,7 @@ services:
       HERMES_DASHBOARD_PORT: "9119"
       HERMES_DASHBOARD_BASIC_AUTH_USERNAME: ${HERMES_DASHBOARD_BASIC_AUTH_USERNAME:?set in .env}
       HERMES_DASHBOARD_BASIC_AUTH_PASSWORD: ${HERMES_DASHBOARD_BASIC_AUTH_PASSWORD:?set in .env}
-      HERMES_DASHBOARD_BASIC_AUTH_SECRET: ${HERMES_DASHBOARD_BASIC_AUTH_SECRET:-}
+      HERMES_DASHBOARD_BASIC_AUTH_SECRET: ${HERMES_DASHBOARD_BASIC_AUTH_SECRET:?set in .env (openssl rand -base64 32); empty = logins die on every restart}
       # OpenAI-compatible API (optional)
       API_SERVER_ENABLED: ${API_SERVER_ENABLED:-false}
       API_SERVER_HOST: "0.0.0.0"
@@ -83,6 +102,16 @@ services:
       # optional second model (GitHub Copilot); both empty = not configured
       COPILOT_MODEL: ${COPILOT_MODEL:-}
       COPILOT_GITHUB_TOKEN: ${COPILOT_GITHUB_TOKEN:-}
+      # hosted MCP servers (optional)
+      FLOWGEAR_MCP_URL: ${FLOWGEAR_MCP_URL:-}
+      ATLASSIAN_MCP_AUTH: ${ATLASSIAN_MCP_AUTH:-}
+      # ntfy push channel for the assistant profile (push-only: no inbound allowlist)
+      NTFY_TOPIC: ${NTFY_TOPIC:-}
+      NTFY_PUBLISH_TOPIC: ${NTFY_TOPIC:-}
+      NTFY_HOME_CHANNEL: ${NTFY_TOPIC:-}
+      NTFY_SERVER_URL: ${NTFY_SERVER_URL:-}
+      NTFY_TOKEN: ${NTFY_TOKEN:-}
+      NTFY_MARKDOWN: "true"
       # L3: every outbound connection goes through the allowlisting proxy. There is no other route.
       HTTP_PROXY: "http://edge:8888"
       HTTPS_PROXY: "http://edge:8888"

@@ -152,10 +152,10 @@ Bundled skills to enable in the dashboard Skills tab: `systematic-debugging`,
 Hermes has no journal feature, so findings live in three places that the config and the
 AGENTS.md template wire together:
 
-1. **Kanban board** (`kanban.db` in the data volume, dashboard Kanban tab). Cards hold a
-   markdown body, a comment thread, attachments and an event history. Every worker-spawning
-   feature is off in the config. Enable the tools for the chat profile once:
-   `docker compose exec hermes hermes tools enable kanban`, then `hermes kanban init`.
+1. **Kanban board** (`kanban.db` in the data volume, created lazily; dashboard Kanban tab).
+   Cards hold a markdown body, a comment thread, attachments and an event history. Every
+   worker-spawning feature is off in the config and the toolset is pre-enabled via
+   `platform_toolsets.cli`, so there is no init or enable step.
 2. **`docs/findings/` in each repo**, with `INDEX.md` as the table of contents
    (`templates/docs/findings/INDEX.md`). Git history keeps it, and it travels with the code.
 3. **Holographic memory** (`memory.provider: holographic`): a local SQLite fact store with
@@ -199,6 +199,98 @@ Setup notes:
   `/opt/data/config.yaml` and re-run `docker compose run --rm hermes-init`.
 - There is no automatic difficulty-based routing in Hermes. Escalation is explicit: the
   `planner` alias, `/review`, `/btw`, or the MoA preset.
+
+## Hosted MCP servers: Flowgear Builder and Atlassian
+
+Both are vendor-hosted; nothing runs here. Each is an overlay that hermes-init merges into the
+config only when its `.env` value is set, and both go out through the egress proxy, so their
+hosts must be in `EGRESS_ALLOW`. MCP tools reach git-guard as `mcp__<server>__<tool>`.
+
+**Flowgear Builder MCP** (`FLOWGEAR_MCP_URL=https://<environment-hostname>/mcp/builder`).
+Remote HTTP, OAuth browser sign-in only, one Environment per URL, needs Site Administrator plus
+the Builder permission bundle on the Flowgear side. First login is interactive and once:
+
+```
+docker compose exec -it hermes hermes mcp login flowgear
+```
+
+Hermes prints the authorisation URL; open it on the laptop, sign in, then paste the full
+redirect URL back into the prompt (the callback listener lives inside the container, so the
+browser redirect cannot reach it directly). The token lands in `/opt/data/mcp-tokens/` and
+refreshes itself. Tools such as `ListWorkflows`, `ListNodes`, `GetBuilderGuidance` and the
+save/test tools are exposed as-is. git-guard routes any tool whose name contains deploy,
+publish, promote, release, delete or remove through the human approval gate; everything else
+runs freely so flows can be built without friction. Use a Development environment. Flowgear
+also keeps its own scopes and audit trail per the Builder MCP documentation.
+
+**Atlassian hosted MCP, read-only** (`ATLASSIAN_MCP_AUTH="Basic <base64(email:token)>"`).
+Atlassian Cloud only, endpoint `https://mcp.atlassian.com/v2/mcp`, headless API-token auth so no
+browser step. Read-only is enforced three times: create the API token with read scopes only
+(`read:jira-work`, `read:jira-user`, `read:page:confluence`, `read:content-details:confluence`,
+`search:confluence`), the config registers only tools matching `get*`, `search*`, `list*`,
+`lookup*`, `fetch*`, and git-guard hard-blocks any `mcp__atlassian__*` name containing create,
+update, edit, delete, add, transition, move, assign or comment. OAuth is possible instead
+(`auth: oauth`, then `hermes mcp login atlassian`), but corporate Atlassian often rejects
+dynamic client registration; the scoped token is the reliable route.
+
+Credential stores are off-limits to the agent: git-guard blocks any shell command or
+`read_file` naming `mcp-tokens/`, `.env`, `auth.json`, `.copilot_jwt.json` or `.ssh/`.
+
+## Personal assistant profile
+
+`ASSISTANT_PROFILE=1` makes hermes-init create a second Hermes profile named `assistant`:
+its own `SOUL.md` (persona and file formats), config, memory, sessions, skills and cron jobs,
+served by the same gateway and dashboard (pick it in the dashboard's profile switcher, or
+`docker compose exec -it hermes hermes -p assistant`). It cannot touch repositories: no
+browser, no delegation, `git`/`dotnet`/`docker`/`curl` denied, terminal confined to
+`/opt/data/assistant`, and the same git-guard plugin installed read-only.
+
+The assistant's memory of your commitments is plain Markdown in `/opt/data/assistant`
+(`tasks.md`, `agenda.md`, `followups.md`, `notes/`), formats fixed in its `SOUL.md` so cron
+jobs can parse them. Hermes's kanban has no due-date field and dispatches cards to worker
+agents, so it is deliberately not used for personal tasks. Microsoft 365 has no agent-facing
+calendar or mail tool in Hermes v0.21.5 (the Graph helpers are app-only and used by the Teams
+pipeline), so you paste meetings into `agenda.md` or ask the assistant to record them; a
+Graph-based calendar skill is a later addition that needs a tenant app registration.
+
+Reminders and briefings are cron jobs run by the gateway. Push goes to **ntfy** (phone app or
+web, topic from `NTFY_TOPIC`; public `ntfy.sh` through the proxy or your own server). The
+dashboard itself has no push notifications. Create the standing jobs once from the assistant
+chat, in plain language or with `/cron add`:
+
+```
+/cron add "weekdays at 08:00" "Morning brief: read tasks.md, agenda.md and followups.md; list today's meetings, tasks due or overdue, follow-ups older than 3 working days. Under 15 lines. Deliver to ntfy."
+/cron add "weekdays at 16:30" "End of day: ask what got done, move finished tasks to Done with today's date, list tomorrow's first three items. Deliver to ntfy."
+/cron add "in 45m" "Remind me: stand-up prep"        # one-shot
+```
+
+`/blueprint` lists ready-made templates (`morning-brief`, `workday-start`, `custom-reminder`,
+`evening-winddown`, `weekly-review`); the morning one assumes Google Workspace, so prefer the
+prompts above. Microsoft Teams as a channel needs a public HTTPS endpoint for the bot and an
+SDK that is not in the image, so it is out of scope for a laptop.
+
+## First run
+
+Everything is driven by `config.yaml` plus `.env`; no `hermes setup`, `hermes model`,
+`hermes memory setup`, `hermes kanban init` or `hermes tools enable` is needed. On first boot
+the image's init stamps `_config_version` (already set to the image's current value), copies
+its own `.env.example` into the volume, seeds `SOUL.md`, and git-guard loads because it is in
+`plugins.enabled`. What remains:
+
+1. `docker compose logs hermes | grep -E "stage2|config-migrate|plugin|gateway"` once, to see
+   the migration and git-guard load lines. Then `docker compose exec hermes hermes doctor`.
+2. **Browser tools need one warm-up.** The `agent-browser` driver is fetched with `npx` on
+   first use. Add `registry.npmjs.org` to `EGRESS_ALLOW` temporarily, run
+   `docker compose exec hermes hermes doctor --fix`, then remove it. The npm cache persists in
+   the volume.
+3. **Flowgear only:** `docker compose exec -it hermes hermes mcp login flowgear` (see above).
+4. **Copilot only:** nothing if the token is in `.env`; otherwise
+   `docker compose exec -it hermes hermes auth add copilot` runs a device flow.
+5. **Assistant only:** create the standing cron jobs from the assistant chat (see above) and
+   subscribe your phone to the ntfy topic.
+6. **Per repo:** copy `templates/AGENTS.md`, `templates/.ignore` and `templates/docs/findings/`
+   into the repo. If a repo carries its own `.hermes/skills`, list its exact path under
+   `skills.trusted_project_dirs`.
 
 ## Verifying
 
@@ -277,6 +369,9 @@ hermes.Dockerfile             derived image: /etc/gitconfig + /opt/guard baked i
 .env.example                  all knobs
 hermes-home/config.yaml       Hermes config seed (model, approvals, deny floor, toolsets, plugin)
 hermes-home/config.copilot.yaml  optional overlay: Copilot planner/reviewer/judge with local fallback
+hermes-home/config.flowgear.yaml optional overlay: Flowgear Builder MCP (OAuth)
+hermes-home/config.atlassian.yaml optional overlay: Atlassian hosted MCP, read-only (API token)
+hermes-home/assistant/        assistant profile: SOUL.md, config.yaml, workspace templates
 guard/seed-config.py          hermes-init helper that merges the overlay when COPILOT_MODEL is set
 hermes-home/plugins/git-guard plugin.yaml, __init__.py (hook + audit), policy.py (engine)
 guard/gitconfig               L2 system gitconfig

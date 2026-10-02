@@ -28,7 +28,20 @@ MAX_FILE_SCAN_BYTES = 256 * 1024
 MAX_FILES_PER_COMMAND = 5
 MAX_RECURSION = 12
 
-PROTECTED_TOOLS = {"terminal", "execute_code", "write_file", "patch", "skill_manage", "process_manage"}
+PROTECTED_TOOLS = {"terminal", "execute_code", "write_file", "patch", "skill_manage", "process_manage", "read_file"}
+
+# MCP tools reach the hook as mcp__<server>__<tool>. These globs (fnmatch, case-insensitive on
+# the lowered name) route the call to the human approval gate instead of blocking it.
+MCP_APPROVE_GLOBS = [
+    "mcp__flowgear__*deploy*", "mcp__flowgear__*publish*", "mcp__flowgear__*promote*",
+    "mcp__flowgear__*delete*", "mcp__flowgear__*remove*", "mcp__flowgear__*release*",
+]
+# MCP tools that are never allowed, whatever the server advertises.
+MCP_BLOCK_GLOBS = [
+    "mcp__atlassian__*create*", "mcp__atlassian__*update*", "mcp__atlassian__*edit*",
+    "mcp__atlassian__*delete*", "mcp__atlassian__*add*", "mcp__atlassian__*transition*",
+    "mcp__atlassian__*move*", "mcp__atlassian__*assign*", "mcp__atlassian__*comment*",
+]
 
 
 class GuardError(Exception):
@@ -544,6 +557,24 @@ _PROTECTED_RES = [
 ]
 
 
+_SECRET_READ_RES = [
+    re.compile(r"(^|/)mcp-tokens(/|$)"),
+    re.compile(r"(^|/)\.copilot_jwt\.json$"),
+    re.compile(r"(^|/)auth\.json$"),
+    re.compile(r"(^|/)\.env(\.(?!example$|sample$|template$|dist$)[A-Za-z0-9_-]+)?$"),
+    re.compile(r"(^|/)\.git-credentials$"),
+    re.compile(r"(^|/)\.ssh/"),
+]
+
+
+def _is_secret_store(tok: str) -> bool:
+    """Paths whose CONTENT is a credential: no shell command may name them at all."""
+    t = _norm_path_token(tok)
+    if not t or t.startswith("-"):
+        return False
+    return any(rx.search(t) for rx in _SECRET_READ_RES)
+
+
 def _is_protected_path(tok: str) -> bool:
     t = _norm_path_token(tok)
     if not t or t.startswith("-"):
@@ -741,6 +772,9 @@ def _analyze_segment(seg: _Segment, scan: _Scan, ctx: _Ctx) -> Optional[str]:
         return None
     if argv[0] in KEYWORDS_NOEXEC_SEGMENT:
         return None
+    for t in argv:
+        if _is_secret_store(t):
+            return f"{t!r} is a credential store; commands may not read or name it"
     # leading env assignments
     while argv and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", argv[0], re.S):
         name = argv[0].split("=", 1)[0]
@@ -1071,11 +1105,34 @@ def analyze_command(command: str, workdir: Optional[str] = None) -> Optional[str
 # Tool-call entry point
 # --------------------------------------------------------------------------------------
 
+def mcp_verdict(tool_name: str) -> Optional[str]:
+    """'block' / 'approve' / None for an MCP tool name. Never raises."""
+    try:
+        import fnmatch
+        name = (tool_name or "").lower()
+        if not name.startswith("mcp__"):
+            return None
+        if any(fnmatch.fnmatchcase(name, g) for g in MCP_BLOCK_GLOBS):
+            return "block"
+        if any(fnmatch.fnmatchcase(name, g) for g in MCP_APPROVE_GLOBS):
+            return "approve"
+        return None
+    except Exception:  # noqa: BLE001
+        return "block"
+
+
 def check_tool_call(tool_name: str, args) -> Optional[str]:
     """Return a block reason or None. Never raises."""
     try:
         if not isinstance(args, dict):
             args = {}
+        if isinstance(tool_name, str) and tool_name.startswith("mcp__"):
+            return f"MCP tool {tool_name} is a write operation on a read-only server" if mcp_verdict(tool_name) == "block" else None
+        if tool_name == "read_file":
+            p = args.get("path")
+            if isinstance(p, str) and _is_secret_store(p):
+                return f"read_file of credential store {p!r} is denied"
+            return None
         if tool_name == "terminal":
             return analyze_command(args.get("command"), args.get("workdir"))
         if tool_name == "execute_code":

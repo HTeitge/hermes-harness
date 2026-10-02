@@ -1,0 +1,21 @@
+# Flowgear Builder MCP (vendor-hosted, remote HTTP, OAuth browser sign-in). Merged by
+# hermes-init only when FLOWGEAR_MCP_URL is set in .env.
+#   URL shape: https://<environment-hostname>/mcp/builder  (one Environment per URL; use a
+#   Development environment). Needs Site Administrator + the Builder permission bundle.
+# First login (interactive, once; token refreshes itself afterwards):
+#   docker compose exec -it hermes hermes mcp login flowgear
+#   -> open the printed URL on the laptop, sign in, paste the full redirect URL back.
+# Tokens: /opt/data/mcp-tokens/flowgear.json (0600). git-guard blocks shell reads of that dir.
+# Deploy/publish/delete-looking tools go through the human approval gate (git-guard plugin).
+mcp_servers:
+  flowgear:
+    url: "${FLOWGEAR_MCP_URL}"
+    auth: oauth
+    oauth:
+      flow: browser
+      timeout: 600
+    timeout: 300
+    connect_timeout: 60
+    tools:
+      resources: true
+      prompts: true

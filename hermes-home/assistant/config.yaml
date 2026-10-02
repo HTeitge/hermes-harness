@@ -1,0 +1,110 @@
+# Config for the `assistant` profile (HERMES_HOME=/opt/data/profiles/assistant). Seeded by
+# hermes-init when ASSISTANT_PROFILE=1. Shares the gateway, dashboard and model with the
+# engineering profile; has its own SOUL, memory, sessions, skills and cron jobs.
+_config_version: 46
+
+model:
+  default: "${LLM_MODEL}"
+  provider: custom
+  base_url: "${LLM_BASE_URL}"
+  api_key: "${LLM_API_KEY}"
+  context_length: 131072
+  api_mode: chat_completions
+
+providers:
+  local:
+    api: "${LLM_BASE_URL}"
+    key_env: LLM_API_KEY
+    default_model: "${LLM_MODEL}"
+    context_length: 131072
+    transport: chat_completions
+    extra_body:
+      temperature: 0.6
+      top_p: 0.95
+      top_k: 20
+      chat_template_kwargs:
+        enable_thinking: false      # assistant turns are short; no reasoning budget needed
+
+auxiliary:
+  compression:
+    provider: custom
+    base_url: "${LLM_BASE_URL}"
+    api_key: "${LLM_API_KEY}"
+    model: "${LLM_MODEL}"
+    timeout: 600
+  background_review:
+    enabled: false
+  title_generation:
+    model_upgrade_enabled: false
+
+terminal:
+  backend: "local"
+  cwd: "/opt/data/assistant"
+  timeout: 120
+
+plugins:
+  enabled:
+    - git-guard                      # same guard; blocks repo/credential access from this profile too
+  hook_callback_timeout: 10
+  hermes-memory-store:
+    auto_extract: false
+
+approvals:
+  mode: manual
+  cron_mode: deny
+  single_query_mode: deny
+  unattended_mode: deny
+  deny:
+    - "git *"
+    - "dotnet *"
+    - "docker *"
+    - "ssh *"
+    - "curl *"
+    - "wget *"
+
+agent:
+  max_turns: 60
+  coding_context: off
+  disabled_toolsets:
+    - code_execution
+    - web
+    - search
+    - browser
+    - vision
+    - image_gen
+    - tts
+    - delegation
+    - homeassistant
+    - messaging
+    - spotify
+    - discord
+    - discord_admin
+
+memory:
+  memory_enabled: true
+  user_profile_enabled: true
+  nudge_interval: 8
+  provider: holographic
+
+skills:
+  creation_nudge_interval: 0
+  write_approval: true
+
+kanban:
+  dispatch_in_gateway: false
+  dispatch_profiles: []
+  auto_decompose: false
+  review_dispatch: false
+  notify_in_gateway: false
+
+cron:
+  wrap_response: false
+  max_parallel_jobs: 1
+  catch_up_missed: true
+
+compression:
+  enabled: true
+  proactive_prune_tokens: 0
+
+display:
+  memory_notifications: off

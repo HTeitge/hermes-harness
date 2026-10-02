@@ -359,6 +359,34 @@ def test_blocked(cmd):
     assert reason, f"expected block: {cmd!r}"
 
 
+def test_secret_stores_unreadable():
+    for cmd in ("cat /opt/data/mcp-tokens/flowgear.json", "ls /opt/data/mcp-tokens", "cat /opt/data/.env",
+                "grep -r token /opt/data/mcp-tokens/", "cat ~/.hermes/auth.json", "cat .env.production",
+                "base64 /opt/data/.copilot_jwt.json", "cp /opt/data/mcp-tokens/x.json /tmp/x", "cat ~/.ssh/id_ed25519"):
+        assert policy.analyze_command(cmd), cmd
+    assert policy.analyze_command("cat .env.example") is None
+    assert policy.analyze_command("cat docs/environment.md") is None
+    assert policy.check_tool_call("read_file", {"path": "/opt/data/mcp-tokens/atlassian.json"})
+    assert policy.check_tool_call("read_file", {"path": "/workspace/app/.env"})
+    assert policy.check_tool_call("read_file", {"path": "/workspace/app/src/x.cs"}) is None
+
+
+def test_mcp_tools():
+    assert policy.mcp_verdict("mcp__flowgear__ListWorkflows") is None
+    assert policy.mcp_verdict("mcp__flowgear__SaveWorkflow") is None
+    assert policy.mcp_verdict("mcp__flowgear__DeployWorkflow") == "approve"
+    assert policy.mcp_verdict("mcp__flowgear__PublishRelease") == "approve"
+    assert policy.mcp_verdict("mcp__atlassian__getJiraIssue") is None
+    assert policy.mcp_verdict("mcp__atlassian__searchConfluenceUsingCql") is None
+    assert policy.mcp_verdict("mcp__atlassian__createJiraIssue") == "block"
+    assert policy.mcp_verdict("mcp__atlassian__addCommentToJiraIssue") == "block"
+    assert policy.mcp_verdict("mcp__atlassian__transitionJiraIssue") == "block"
+    assert policy.check_tool_call("mcp__atlassian__createJiraIssue", {"fields": {}})
+    assert policy.check_tool_call("mcp__atlassian__getJiraIssue", {"issueKey": "X-1"}) is None
+    assert policy.check_tool_call("mcp__flowgear__DeployWorkflow", {}) is None  # approve, not block
+    assert policy.mcp_verdict(None) is None
+
+
 def test_lifecycle_knob(monkeypatch):
     assert policy.analyze_command("docker restart api")
     monkeypatch.setenv("GIT_GUARD_ALLOW_CONTAINER_LIFECYCLE", "1")

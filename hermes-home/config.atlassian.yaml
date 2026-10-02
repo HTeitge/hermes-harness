@@ -1,0 +1,34 @@
+# Atlassian hosted MCP (Jira + Confluence, Atlassian Cloud only), READ-ONLY. Merged by
+# hermes-init only when ATLASSIAN_MCP_AUTH is set in .env.
+#
+# Auth = a scoped API token sent as a header (headless, no browser):
+#   ATLASSIAN_MCP_AUTH="Basic <base64(email:api_token)>"   personal scoped token
+#   ATLASSIAN_MCP_AUTH="Bearer <service_account_key>"       service account
+# Create the token with READ scopes only (read:jira-work, read:jira-user, read:page:confluence,
+# read:content-details:confluence, search:confluence). Read-only is then enforced by the
+# credential itself; the include filter below is the second layer and the org admin's
+# Read/Search permission groups are the third.
+#
+# OAuth alternative: replace `headers` with `auth: oauth` and run
+#   docker compose exec -it hermes hermes mcp login atlassian
+mcp_servers:
+  atlassian:
+    url: "https://mcp.atlassian.com/v2/mcp"
+    headers:
+      Authorization: "${ATLASSIAN_MCP_AUTH}"
+    timeout: 120
+    connect_timeout: 60
+    tools:
+      include:            # fnmatch on the original tool names; anything else is never registered
+        - "get*"
+        - "Get*"
+        - "search*"
+        - "Search*"
+        - "lookup*"
+        - "fetch*"
+        - "list*"
+        - "List*"
+        - "atlassianUserInfo"
+        - "getAccessibleAtlassianResources"
+      resources: false
+      prompts: false

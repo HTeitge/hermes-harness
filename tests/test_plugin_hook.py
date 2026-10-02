@@ -36,6 +36,10 @@ def test_register_and_block(monkeypatch, tmp_path):
     assert cb(tool_name="execute_code", args={"code": "print(1)"})["action"] == "block"
     # fail closed on garbage
     assert cb(tool_name="terminal", args=None)["action"] == "block"
+    out = cb(tool_name="mcp__flowgear__DeployWorkflow", args={"id": "w1"})
+    assert out["action"] == "approve" and out["rule_key"].endswith("DeployWorkflow")
+    assert cb(tool_name="mcp__atlassian__createJiraIssue", args={})["action"] == "block"
+    assert cb(tool_name="mcp__atlassian__getJiraIssue", args={"issueKey": "A-1"}) is None
     lines = open(tmp_path / "git-guard" / "decisions.jsonl").read().splitlines()
     recs = [json.loads(l) for l in lines]
-    assert [r["decision"] for r in recs] == ["block", "allow", "block", "block"]
+    assert [r["decision"] for r in recs] == ["block", "allow", "block", "block", "approve", "block", "allow"]

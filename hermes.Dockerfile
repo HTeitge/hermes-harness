@@ -10,4 +10,5 @@ COPY --chmod=0644 guard/gitconfig  /etc/gitconfig
 # No credential helpers, no ssh client config, nothing to push with.
 RUN rm -f /etc/ssh/ssh_config.d/* 2>/dev/null; \
     chown -R root:root /opt/guard && chmod -R a-w /opt/guard /etc/gitconfig
-USER hermes
+# Stay root: the image's s6 init (stage2) must run as root to remap the uid, chown the volume,
+# migrate config.yaml and drop privileges to `hermes` per service. Upstream does the same.

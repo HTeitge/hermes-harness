@@ -42,6 +42,32 @@ if [ -n "${COPILOT_MODEL:-}" ]; then
   grep -q 'provider: copilot' /opt/data/config.yaml && ok "config.yaml carries the Copilot block" || bad "config.yaml has no Copilot block (COPILOT_MODEL was empty at seed time; delete /opt/data/config.yaml and re-run hermes-init)"
 fi
 
+if [ -n "${FLOWGEAR_MCP_URL:-}" ]; then
+  hdr "Flowgear Builder MCP"
+  h=$(printf '%s' "$FLOWGEAR_MCP_URL" | sed -E 's#^https?://([^/]+).*#\1#')
+  code=$(curl -s -m 20 -o /dev/null -w '%{http_code}' "https://$h/" 2>/dev/null); [ "$code" != "000" ] && [ "$code" != "403" ] && ok "$h reachable through the proxy ($code)" || bad "$h not reachable (code $code): add it to EGRESS_ALLOW"
+  grep -q '^  flowgear:' /opt/data/config.yaml && ok "mcp_servers.flowgear present in config.yaml" || bad "flowgear block missing from config.yaml (re-seed)"
+  [ -f /opt/data/mcp-tokens/flowgear.json ] && ok "OAuth token present (/opt/data/mcp-tokens/flowgear.json)" || echo "TODO  no Flowgear token yet: run  docker compose exec -it hermes hermes mcp login flowgear"
+fi
+if [ -n "${ATLASSIAN_MCP_AUTH:-}" ]; then
+  hdr "Atlassian hosted MCP (read-only)"
+  code=$(curl -s -m 20 -o /dev/null -w '%{http_code}' https://mcp.atlassian.com/ 2>/dev/null); [ "$code" != "000" ] && [ "$code" != "403" ] && ok "mcp.atlassian.com reachable through the proxy ($code)" || bad "mcp.atlassian.com not reachable (code $code): add it to EGRESS_ALLOW"
+  grep -q '^  atlassian:' /opt/data/config.yaml && ok "mcp_servers.atlassian present in config.yaml" || bad "atlassian block missing from config.yaml (re-seed)"
+  if command -v hermes >/dev/null 2>&1; then hermes mcp test atlassian 2>&1 | tail -3; fi
+fi
+if [ -n "${ASSISTANT_PROFILE:-}" ]; then
+  hdr "Assistant profile"
+  [ -f /opt/data/profiles/assistant/config.yaml ] && ok "profile config present" || bad "profiles/assistant/config.yaml missing (re-run hermes-init)"
+  [ -f /opt/data/profiles/assistant/SOUL.md ] && ok "assistant SOUL.md present" || bad "assistant SOUL.md missing"
+  [ -f /opt/data/assistant/tasks.md ] && ok "assistant workspace present" || bad "/opt/data/assistant workspace missing"
+  ( touch /opt/data/profiles/assistant/plugins/git-guard/x 2>/dev/null ) && bad "assistant git-guard copy is writable" || ok "assistant git-guard copy is read-only"
+  if command -v hermes >/dev/null 2>&1; then hermes profile list 2>/dev/null | grep -q assistant && ok "hermes profile list shows assistant" || bad "hermes profile list does not show assistant"; fi
+  if [ -n "${NTFY_TOPIC:-}" ]; then
+    code=$(curl -s -m 20 -o /dev/null -w '%{http_code}' -H "Title: hermes-harness verify" ${NTFY_TOKEN:+-H "Authorization: Bearer $NTFY_TOKEN"} -d "verify.sh ran on $(date -u +%FT%TZ)" "${NTFY_SERVER_URL:-https://ntfy.sh}/${NTFY_TOPIC}" 2>/dev/null)
+    [ "$code" = "200" ] && ok "ntfy push delivered (check your phone)" || bad "ntfy push failed (code $code): server host in EGRESS_ALLOW? topic/token right?"
+  fi
+fi
+
 hdr "Docker socket proxy: read/exec only"
 docker ps >/dev/null 2>&1 && ok "docker ps works" || bad "docker ps failed (DOCKER_HOST=$DOCKER_HOST)"
 if docker run --rm alpine:3.22 true >/dev/null 2>&1; then bad "docker run SUCCEEDED through the proxy"; else ok "docker run refused"; fi

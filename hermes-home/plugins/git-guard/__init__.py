@@ -56,7 +56,12 @@ def _summarise_args(tool_name: str, args: Any) -> str:
 def _on_pre_tool_call(tool_name: str = "", args: Any = None, task_id: str = "", session_id: str = "",
                       **_: Any) -> Optional[Dict[str, str]]:
     reason = policy.check_tool_call(tool_name, args)  # never raises
-    if tool_name in policy.PROTECTED_TOOLS:
+    if not reason and isinstance(tool_name, str) and policy.mcp_verdict(tool_name) == "approve":
+        _audit({"ts": time.time(), "tool": tool_name, "decision": "approve", "reason": "mcp approval gate",
+                "input": _summarise_args(tool_name, args), "task_id": task_id, "session_id": session_id})
+        return {"action": "approve", "message": f"{tool_name} changes a live Flowgear environment; operator approval required",
+                "rule_key": f"git-guard:{tool_name}"}
+    if tool_name in policy.PROTECTED_TOOLS or (isinstance(tool_name, str) and tool_name.startswith("mcp__")):
         _audit({
             "ts": time.time(), "tool": tool_name, "decision": "block" if reason else "allow",
             "reason": reason, "input": _summarise_args(tool_name, args),
